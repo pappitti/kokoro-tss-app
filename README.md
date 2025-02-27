@@ -1,4 +1,6 @@
-# Kokoro TTS React Demo
+# Kokoro:ki
+
+README written by Claude 3.7
 
 A React application that demonstrates the capabilities of Kokoro.js, a browser-based Text-to-Speech model with 82 million parameters that runs 100% locally.
 
