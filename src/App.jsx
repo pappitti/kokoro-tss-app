@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, createRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { KokoroTTS, TextSplitterStream } from 'kokoro-js';
 import './App.css'
 
@@ -41,11 +41,13 @@ function App() {
   const [streamingAudio, setStreamingAudio] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentPlayingIndex, setCurrentPlayingIndex] = useState(-1);
-  const streamingAudioRefs = useRef([]);
   
-  // Audio reference
+  // Audio references
   const audioRef = useRef(null);
   const streamSplitterRef = useRef(null);
+  
+  // Create a stable ref for the streaming audio elements
+  const streamingAudioRefs = useRef({});
   
   // Helper function to update settings
   const updateSetting = (key, value) => {
@@ -101,63 +103,82 @@ function App() {
     return categories;
   };
 
-  // Initialize refs array when streamingAudio changes
-  useEffect(() => {
-    streamingAudioRefs.current = streamingAudio.map(() => createRef());
-  }, [streamingAudio]);
-
   // Set up event listeners for sequential playback
   useEffect(() => {
-    // Only run this effect if we have streaming audio
-    if (streamingAudio.length === 0) return;
-    
-    // Remove any existing listeners first
-    streamingAudioRefs.current.forEach((ref) => {
-      if (ref.current) {
-        ref.current.onended = null;
+    // Function to set up playback chain
+    const setupPlaybackChain = () => {
+      console.log("Setting up sequential playback chain");
+      
+      // First remove any existing handlers
+      Object.values(streamingAudioRefs.current).forEach(audioElement => {
+        if (audioElement) {
+          audioElement.onended = null;
+        }
+      });
+      
+      // Then set up sequential playback via onended handlers
+      for (let i = 0; i < streamingAudio.length; i++) {
+        const audioElement = streamingAudioRefs.current[i];
+        if (audioElement) {
+          // Create a closure to capture the current index
+          audioElement.onended = (function(currentIndex) {
+            return function() {
+              console.log(`Audio ${currentIndex} ended`);
+              // Only proceed if there's a next audio to play
+              if (currentIndex < streamingAudio.length - 1) {
+                const nextIndex = currentIndex + 1;
+                const nextAudio = streamingAudioRefs.current[nextIndex];
+                
+                if (nextAudio) {
+                  console.log(`Playing next audio ${nextIndex}`);
+                  // Update UI to show which clip is playing
+                  setCurrentPlayingIndex(nextIndex);
+                  // Play the next audio
+                  nextAudio.play().catch(err => {
+                    console.error(`Error playing audio ${nextIndex}:`, err);
+                  });
+                }
+              } else {
+                // This was the last audio chunk
+                console.log("Reached end of audio sequence");
+                setCurrentPlayingIndex(-1);
+              }
+            };
+          })(i);
+        }
       }
-    });
+    };
     
-    // Add new listeners for sequential playback
-    streamingAudioRefs.current.forEach((ref, index) => {
-      if (ref.current) {
-        ref.current.onended = () => {
-          // When audio ends, play the next one if available
-          if (index < streamingAudio.length - 1) {
-            setCurrentPlayingIndex(index + 1);
-            streamingAudioRefs.current[index + 1].current?.play().catch(err => {
-              console.error("Error auto-playing next chunk:", err);
-            });
-          } else {
-            // End of all audio chunks
-            setCurrentPlayingIndex(-1);
-          }
-        };
-      }
-    });
-  }, [streamingAudio]);
+    // Only run if we have streaming audio
+    if (streamingAudio.length > 0) {
+      // Use a timeout to ensure all audio elements are properly rendered
+      setTimeout(setupPlaybackChain, 200);
+    }
+  }, [streamingAudio.length]);
 
-  // Start playback when a new chunk is added
+  // Handle automatic playback of new chunks
   useEffect(() => {
-    // Only run this if we have streaming audio
     if (streamingAudio.length === 0) return;
     
     const lastIndex = streamingAudio.length - 1;
+    const isFirstChunk = streamingAudio.length === 1;
     
-    // If this is the first chunk or we're already playing something
-    if (streamingAudio.length === 1 || currentPlayingIndex !== -1) {
-      // Small delay to ensure the audio element is properly set up
+    // Only auto-play the first chunk when it's created
+    // This starts the sequence, then the onended handlers take over
+    if (isFirstChunk) {
+      // Small delay to ensure the audio element is available
       setTimeout(() => {
-        if (streamingAudioRefs.current[lastIndex]?.current) {
+        const audioElement = streamingAudioRefs.current[lastIndex];
+        if (audioElement) {
+          console.log(`Auto-playing first chunk (index ${lastIndex})`);
           setCurrentPlayingIndex(lastIndex);
-          streamingAudioRefs.current[lastIndex].current.play().catch(err => {
-            console.error("Error auto-playing new chunk:", err);
+          audioElement.play().catch(err => {
+            console.error(`Error auto-playing first chunk ${lastIndex}:`, err);
           });
         }
-      }, 100);
+      }, 300);
     }
-  }, [streamingAudio.length, currentPlayingIndex]);
-
+  }, [streamingAudio.length]);
 
   // Load the Kokoro TTS model
   const loadModel = async () => {
@@ -183,13 +204,9 @@ function App() {
       
       // Extract available voices
       const voiceList = Object.entries(tts.voices).map(([id, info]) => {
-
         const name = info.name || id.split('_');
-        
         const genderIcon = info.gender == "Female" ? '👩' : '👨';
-        
         const traitIcon = info.traits || '';
-
         const overallGrade = info.overallGrade || 'C';
         
         return {
@@ -273,6 +290,8 @@ function App() {
       if (settings.streaming) {
         // Clear previous streaming audio
         setStreamingAudio([]);
+        // Clear audio refs
+        streamingAudioRefs.current = {};
         await startStreamingSpeech();
       } else {
         // Regular generation
@@ -280,7 +299,7 @@ function App() {
           voice: settings.voice,
           speed: settings.speed
         });
-
+        
         // Log the audio object structure for debugging
         console.log("Audio object:", audio);
         
@@ -312,7 +331,7 @@ function App() {
     }
   };
 
-  // Also update the streaming audio processing
+  // Start streaming audio processing
   const startStreamingSpeech = async () => {
     if (!model || !settings.text.trim()) return;
     
@@ -385,6 +404,35 @@ function App() {
     setIsStreaming(false);
   };
   
+  // Function to play all audio chunks from the beginning
+  const playAllAudio = () => {
+    // Make sure all audio elements are stopped and reset to beginning
+    Object.values(streamingAudioRefs.current).forEach(audioElement => {
+      if (audioElement) {
+        audioElement.pause();
+        audioElement.currentTime = 0;
+      }
+    });
+    
+    // Clear current playing state
+    setCurrentPlayingIndex(-1);
+    
+    // Play only the first audio element after a small delay
+    // The onended event handlers will take care of the sequential playback
+    setTimeout(() => {
+      const firstAudio = streamingAudioRefs.current[0];
+      if (firstAudio) {
+        console.log("Starting sequential playback from first audio");
+        setCurrentPlayingIndex(0);
+        firstAudio.play().catch(err => {
+          console.error("Error playing from start:", err);
+        });
+      } else {
+        console.error("First audio element not found");
+      }
+    }, 100);
+  };
+  
   // Combine streaming audio chunks into one downloadable file
   const combineStreamingAudio = async () => {
     if (streamingAudio.length === 0) return null;
@@ -416,22 +464,8 @@ function App() {
           <h3 className="text-lg font-medium text-gray-900">Streaming Results</h3>
           <div className="flex space-x-2">
             <button
-              onClick={() => {
-                // Stop current playback
-                streamingAudioRefs.current.forEach(ref => {
-                  if (ref.current) ref.current.pause();
-                });
-                setCurrentPlayingIndex(-1);
-                
-                // Start from beginning
-                if (streamingAudioRefs.current[0]?.current) {
-                  setCurrentPlayingIndex(0);
-                  streamingAudioRefs.current[0].current.play().catch(err => {
-                    console.error("Error playing from start:", err);
-                  });
-                }
-              }}
-              className="px-2 py-1 text-xs bg-blue-600 rounded hover:bg-blue-700"
+              onClick={playAllAudio}
+              className="px-2 py-1 text-xs bg-blue-600 rounded text-white hover:bg-blue-700"
               disabled={streamingAudio.length === 0}
             >
               Play All
@@ -464,10 +498,34 @@ function App() {
               <p className="text-sm text-gray-700 mb-2">{item.text}</p>
               <div className="flex items-center">
                 <audio 
-                  ref={el => streamingAudioRefs.current[index] = el}
+                  ref={(el) => {
+                    if (el) {
+                      // Store reference to this audio element
+                      streamingAudioRefs.current[index] = el;
+                      console.log(`Registered audio element ${index}`);
+                      
+                      // Prevent auto-play when audio is created
+                      // This ensures only manually played audio or via Play All will start
+                      el.autoplay = false;
+                    }
+                  }}
                   className="w-full h-8" 
                   src={item.url}
                   controls
+                  // Disable individual controls during sequential playback
+                  onPlay={() => {
+                    // If this wasn't the current playing audio in sequence
+                    if (currentPlayingIndex !== index && currentPlayingIndex !== -1) {
+                      // Pause all other audio elements
+                      Object.values(streamingAudioRefs.current).forEach((audio, i) => {
+                        if (i !== index && audio) {
+                          audio.pause();
+                        }
+                      });
+                    }
+                    // Update the current playing index
+                    setCurrentPlayingIndex(index);
+                  }}
                 >
                   Your browser does not support the audio element.
                 </audio>
@@ -549,7 +607,7 @@ function App() {
                 {/* Generate Button */}
                 <div className="mb-6 flex space-x-3">
                   <button
-                    className="flex-1 py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    className="flex-1 py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
                     onClick={generateSpeech}
                     disabled={loading || isStreaming || !model || !settings.text.trim()}
                   >
@@ -604,7 +662,7 @@ function App() {
                 )}
                 
                 {/* Streaming Audio Results */}
-                {settings.streaming && streamingAudio.length > 0 && renderStreamingResults()}
+                {settings.streaming && renderStreamingResults()}
               </div>
               
               <div>
